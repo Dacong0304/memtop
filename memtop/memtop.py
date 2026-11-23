@@ -47,7 +47,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 HOME = os.path.expanduser("~")
 CONFIG_DIR = os.path.join(HOME, ".config", "memtop")
 PROTECT_FILE = os.path.join(CONFIG_DIR, "protect.txt")
@@ -1474,6 +1474,21 @@ def cmd_protect(args) -> int:
     return 1
 
 
+def cmd_purge(args) -> int:
+    snap = sample(True)
+    before = snap.mem.cached
+    print("当前文件缓存 ≈ %s，清理需要管理员授权…" % human(before))
+    code, out, err = system_purge()
+    if code != 0:
+        canceled = "cancel" in err.lower() or "-128" in err
+        print("已取消授权" if canceled else ("清理失败：%s" % (err or "purge 退出码 %d" % code)),
+              file=sys.stderr)
+        return 2 if canceled else 1
+    after = sample(True).mem.cached
+    print("缓存 %s → %s，释放 ≈ %s" % (human(before), human(after), human(max(0, before - after))))
+    return 0
+
+
 def cmd_pressure(args) -> int:
     snap = sample(True)
     mem = snap.mem
@@ -1524,6 +1539,19 @@ def _machine_info() -> dict:
         "arch": platform.machine(),
         "host": (platform.node() or "").split(".")[0],
     }
+
+
+def system_purge(timeout: float = 120.0) -> Tuple[int, str, str]:
+    """调用系统 purge 丢弃文件缓存；会弹出管理员授权框。"""
+    script = 'do shell script "/usr/sbin/purge" with administrator privileges'
+    try:
+        p = subprocess.run(["/usr/bin/osascript", "-e", script],
+                           capture_output=True, text=True, timeout=timeout)
+        return p.returncode, (p.stdout or "").strip(), (p.stderr or "").strip()
+    except subprocess.TimeoutExpired:
+        return -1, "", "授权或执行超时"
+    except OSError as e:
+        return -1, "", str(e)
 
 
 def group_json(g: Group) -> dict:
@@ -1634,6 +1662,7 @@ class WebState:
         self._snap: Optional[Snapshot] = None
         self._error: Optional[str] = None
         self._gen = 0
+        self._last_purge = 0.0
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
@@ -1831,6 +1860,8 @@ def make_handler(state: WebState, web_dir: str):
                 return self._api_kill(body)
             if path == "/api/protect":
                 return self._api_protect(body)
+            if path == "/api/purge":
+                return self._api_purge(body)
             return self._deny(404, "未找到")
 
         def _api_kill(self, body: dict) -> None:
@@ -1892,6 +1923,34 @@ def make_handler(state: WebState, web_dir: str):
             self._json(200, {
                 "ok": True, "result": result, "refused": refused, "missing": missing,
                 "dry_run": dry_run,
+            })
+
+        def _api_purge(self, body: dict) -> None:
+            if not body.get("confirm"):
+                return self._json(400, {"ok": False, "error": "需要 confirm=true"})
+            now = time.time()
+            if now - state._last_purge < 30:
+                return self._json(429, {"ok": False, "error": "刚清理过，请 30 秒后再试"})
+
+            snap = state.get()
+            before = snap.mem.cached if snap else 0
+            code, out, err = system_purge()
+            if code != 0:
+                canceled = "cancel" in err.lower() or "-128" in err
+                return self._json(409 if canceled else 500, {
+                    "ok": False,
+                    "canceled": canceled,
+                    "error": "已取消授权" if canceled else (err or "purge 执行失败"),
+                })
+
+            state._last_purge = time.time()
+            state.sample_once()
+            after_snap = state.get()
+            after = after_snap.mem.cached if after_snap else 0
+            freed = max(0, before - after)
+            self._json(200, {
+                "ok": True, "before": before, "after": after, "freed": freed,
+                "message": "已清理 ≈ %s" % human(freed),
             })
 
         def _api_protect(self, body: dict) -> None:
@@ -1972,6 +2031,7 @@ def build_parser() -> argparse.ArgumentParser:
   memtop kill @Chrome --dry-run   预览结束整个 Chrome 组
   memtop kill @Chrome --yes --force  确认后强杀
   memtop protect add "Google Chrome"  永久保护
+  memtop purge                清理文件缓存（会请求管理员授权）
   memtop web                  浏览器仪表盘（127.0.0.1，自动打开）
   memtop web --port 9000 --no-open
 """)
@@ -2002,6 +2062,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("pressure", help="内存概况")
 
+    sub.add_parser("purge", help="清理文件缓存（需要管理员授权）")
+
     w = sub.add_parser("web", help="启动本地 Web 仪表盘")
     w.add_argument("--port", type=int, default=8787, help="监听端口（默认 8787，0 为随机）")
     w.add_argument("--no-open", action="store_true", help="不自动打开浏览器")
@@ -2024,6 +2086,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return cmd_protect(args)
     if args.cmd == "pressure":
         return cmd_pressure(args)
+    if args.cmd == "purge":
+        return cmd_purge(args)
     if args.cmd == "web":
         return cmd_web(args)
 

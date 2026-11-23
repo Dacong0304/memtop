@@ -339,7 +339,12 @@ final class PanelController: NSViewController {
         brand.spacing = 7
         brand.alignment = .centerY
 
-        let header = NSStackView(views: [brand, headerSpacer, pressure])
+        let purgeButton = MTButton("清缓存", size: 9.5, tint: MT.faint) { [weak self] in
+            self?.confirmPurge()
+        }
+        purgeButton.toolTip = "丢弃文件缓存（需要管理员授权，不影响压缩内存）"
+
+        let header = NSStackView(views: [brand, headerSpacer, purgeButton, pressure])
         header.orientation = .horizontal
         header.alignment = .centerY
         header.translatesAutoresizingMaskIntoConstraints = false
@@ -851,6 +856,38 @@ final class PanelController: NSViewController {
         }
     }
 
+    func confirmPurge() {
+        let cached = snapshot?.memory.cached ?? 0
+        alert("清理文件缓存？",
+              "当前文件缓存 \(MT.size(cached))。会调用系统 purge 丢弃文件缓存——不是压缩内存；需要管理员授权，不会结束应用，但短时间内读盘会变慢。",
+              style: .warning, confirm: "清理", destructive: false) { [weak self] in
+            self?.runPurge()
+        }
+    }
+
+    private func runPurge() {
+        let path = memtopPath
+        let before = snapshot?.memory.cached ?? 0
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let outcome = MemTopBar.runPurge()
+            let after = MemTopBar.cachedBytes(path) ?? before
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                switch outcome {
+                case .success:
+                    self.refresh(force: true)
+                    self.alert("已清理文件缓存",
+                               "缓存 \(MT.size(before)) → \(MT.size(after))，释放 ≈ \(MT.size(max(0, before - after)))。",
+                               style: .informational)
+                case .canceled:
+                    self.alert("已取消", "没有获得管理员授权，缓存未清理。", style: .informational)
+                case .failure(let msg):
+                    self.alert("清理失败", msg, style: .critical)
+                }
+            }
+        }
+    }
+
     private func toggleSortMode() {
         sortByCompressed.toggle()
         sortButton.setTitle(sortByCompressed ? "按内存" : "按压缩", tint: sortByCompressed ? MT.teal : MT.dim)
@@ -1175,6 +1212,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let menu = NSMenu()
             menu.addItem(withTitle: "打开面板", action: #selector(openPanel), keyEquivalent: "").target = self
             menu.addItem(withTitle: "刷新", action: #selector(forceRefresh), keyEquivalent: "r").target = self
+            menu.addItem(withTitle: "清理文件缓存…", action: #selector(purgeCache), keyEquivalent: "").target = self
             menu.addItem(.separator())
             menu.addItem(withTitle: "退出 MemTopBar", action: #selector(quit), keyEquivalent: "q").target = self
             statusItem.menu = menu
@@ -1198,6 +1236,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func forceRefresh() { controller.refresh(force: true) }
+
+    @objc private func purgeCache() { controller.confirmPurge() }
 
     @objc private func quit() { NSApp.terminate(nil) }
 
@@ -1261,6 +1301,37 @@ enum MemTopBar {
         } catch {
             return .failure(MTFailure(message: "解析快照失败：\(error.localizedDescription)"))
         }
+    }
+
+    enum PurgeOutcome {
+        case success
+        case canceled
+        case failure(String)
+    }
+
+    static func runPurge() -> PurgeOutcome {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        p.arguments = ["-e", "do shell script \"/usr/sbin/purge\" with administrator privileges"]
+        let err = Pipe()
+        p.standardError = err
+        p.standardOutput = Pipe()
+        do {
+            try p.run()
+        } catch {
+            return .failure("无法启动 osascript：\(error.localizedDescription)")
+        }
+        let errData = err.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        if p.terminationStatus == 0 { return .success }
+        let msg = String(data: errData, encoding: .utf8) ?? ""
+        if msg.contains("-128") || msg.lowercased().contains("cancel") { return .canceled }
+        return .failure(msg.isEmpty ? "purge 退出码 \(p.terminationStatus)" : msg)
+    }
+
+    static func cachedBytes(_ path: String) -> Int? {
+        if case .success(let snap) = runJSON(path) { return snap.memory.cached }
+        return nil
     }
 
     enum KillOutcome {

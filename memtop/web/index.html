@@ -84,7 +84,10 @@
     <article class="card breakdown-card">
       <div class="card-head">
         <h2>内存构成</h2>
-        <span class="hint" id="sampleMeta"></span>
+        <div class="card-head-right">
+          <button class="btn ghost tiny" id="btnPurge" title="丢弃文件缓存（需要管理员授权）">清理缓存</button>
+          <span class="hint" id="sampleMeta"></span>
+        </div>
       </div>
       <div class="stack" id="stack" aria-hidden="true"></div>
       <ul class="legend" id="legend"></ul>
@@ -184,6 +187,28 @@
       <span class="spacer"></span>
       <button class="btn ghost" id="killCancel">取消</button>
       <button class="btn danger" id="killConfirm">结束进程</button>
+    </div>
+  </div>
+</div>
+
+<!-- 清理文件缓存 -->
+<div class="overlay" id="purgeOverlay" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="purgeTitle">
+    <div class="modal-head">
+      <h3 id="purgeTitle">清理文件缓存？</h3>
+      <p id="purgeSub">—</p>
+    </div>
+    <div class="modal-body">
+      <div class="warn">
+        <strong>需要管理员授权</strong>
+        <p>会调用系统 <code>purge</code> 丢弃文件缓存——它清理的是可回收的磁盘缓存，<b>不是压缩内存</b>。
+           不会结束任何应用，但清理后的短时间内读盘会变慢。</p>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <span class="spacer"></span>
+      <button class="btn ghost" id="purgeCancel">取消</button>
+      <button class="btn primary" id="purgeConfirm">清理</button>
     </div>
   </div>
 </div>

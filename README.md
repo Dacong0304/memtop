@@ -71,7 +71,7 @@ cd memtop-bar && ./install.sh   # 菜单栏 App（需要 Command Line Tools）
 ```
 
 菜单栏 App 也可以直接从 [Releases](https://github.com/Dacong0304/memtop/releases)
-下载 `MemTopBar-1.2.0.zip`，解压后拖进 `~/Applications`。
+下载 `MemTopBar-1.3.0.zip`，解压后拖进 `~/Applications`。
 
 ## 用法
 
@@ -134,6 +134,18 @@ compressor。真正能回收这部分内存的只有结束对应进程（或让�
 - **菜单栏**：页脚显示「压缩可释放」，点「按压缩 / 按内存」切换排序，行内数值随之切换为压缩值。
 
 ![按压缩排序](memtop/docs/web-compressed.png)
+
+### 清理文件缓存
+
+「缓存」是 file-backed pages，系统可回收。清理会调用系统 `purge` 丢弃这些缓存，需要管理员授权：
+
+- **Web**：内存构成右上角「清理缓存」→ 确认 → 系统授权 → 显示清理前后对比；
+- **菜单栏**：顶部「清缓存」，或右键菜单「清理文件缓存…」→ 确认 → 授权 → 结果提示；
+- **命令行**：`memtop purge`。
+
+它不会结束应用，也不动压缩内存；清理后短时间内读盘会变慢，30 秒内不可重复。
+
+![清理缓存](memtop/docs/web-purge.png)
 
 ## 目录结构
 

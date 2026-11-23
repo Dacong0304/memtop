@@ -333,6 +333,35 @@
     }, 30);
   }
 
+  function openPurge() {
+    const cached = (state.snap && state.snap.memory.cached) || 0;
+    $("#purgeSub").textContent = "当前文件缓存 " + fmtSize(cached);
+    $("#purgeConfirm").disabled = false;
+    $("#purgeConfirm").textContent = "清理";
+    $("#purgeOverlay").hidden = false;
+  }
+
+  function closePurge() {
+    $("#purgeOverlay").hidden = true;
+  }
+
+  async function doPurge() {
+    const btn = $("#purgeConfirm");
+    if (btn.disabled) return;
+    btn.disabled = true;
+    btn.textContent = "等待授权…";
+    try {
+      const data = await post("/api/purge", { confirm: true });
+      closePurge();
+      toast("已清理 " + fmtSize(data.freed) + "（" + fmtSize(data.before) + " → " + fmtSize(data.after) + "）");
+      await load();
+    } catch (e) {
+      closePurge();
+      if (e.data && e.data.canceled) toast("已取消授权", "warn");
+      else toast("清理失败：" + e.message, "err");
+    }
+  }
+
   function closeKill() {
     $("#killOverlay").hidden = true;
     pending = null;
@@ -600,6 +629,13 @@
       }
     });
 
+    $("#btnPurge").addEventListener("click", openPurge);
+    $("#purgeCancel").addEventListener("click", closePurge);
+    $("#purgeConfirm").addEventListener("click", doPurge);
+    $("#purgeOverlay").addEventListener("click", (e) => {
+      if (e.target.id === "purgeOverlay") closePurge();
+    });
+
     $("#killCancel").addEventListener("click", closeKill);
     $("#killConfirm").addEventListener("click", doKill);
     $("#killOverlay").addEventListener("click", (e) => {
@@ -651,6 +687,7 @@
     document.addEventListener("keydown", (e) => {
       const typing = /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement.tagName);
       if (e.key === "Escape") {
+        if (!$("#purgeOverlay").hidden) return closePurge();
         if (!$("#killOverlay").hidden) return closeKill();
         if (!$("#safetyOverlay").hidden) return void ($("#safetyOverlay").hidden = true);
         if (typing) return void document.activeElement.blur();
@@ -716,6 +753,7 @@
         openKill(g.members, { label: g.name, groupKey: g.key, protectName: g.name });
       }
       if (demo === "safety") { openSafety("protect"); }
+      if (demo === "purge") { openPurge(); }
     }
   }
 

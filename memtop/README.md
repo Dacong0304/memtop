@@ -58,6 +58,7 @@ open ~/Applications/MemTopBar.app
 - **结束**：选中行 → 确认弹窗（含预计回收、可能丢失内容的警告）→ `SIGTERM`，
   3 秒不退再提示强杀；应用主进程需要输入 `yes`；
 - **安全中心**：自定义保护名单（立即生效）、最近操作记录；
+- **清理缓存**：内存构成右上角按钮，调用系统 `purge` 丢弃文件缓存（需管理员授权，不是压缩内存）；
 - 快捷键：`/` 搜索、`j`/`k` 移动、`Enter` 展开、`x` 结束、`r` 刷新、`Esc` 关闭。
 
 ![结束确认](docs/web-kill.png)
@@ -97,6 +98,7 @@ open ~/Applications/MemTopBar.app
 memtop                      # 交互界面（默认）
 memtop -1 --limit 15        # 打印一次快照
 memtop pressure             # 只看内存概况
+memtop purge                # 清理文件缓存（请求管理员授权）
 memtop kill @Chrome         # 结束整个 Chrome 组（会先问）
 ```
 
@@ -187,5 +189,7 @@ Web 概览里的「可释放压缩」就是这个上限，点图例中的「压�
 - 非当前用户的进程默认受保护；`--allow-root` 只解除保护标记，普通用户向 root 进程
   发信号仍然会失败（真要杀得用 `sudo memtop`，不建议）。
 - 结束应用主进程不会保存文档，确认框里的警告请当真。
+- `memtop purge` / 网页「清理缓存」清理的是 file-backed 缓存，不是压缩内存；需要管理员授权，
+  且 30 秒内不可重复。
 - Web 服务是本地单用户工具：没有登录体系，靠 loopback + token 保护；
   不要把端口转发到公网。
