@@ -519,7 +519,7 @@ final class PanelController: NSViewController {
         super.viewDidAppear()
         refresh(force: true)
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 4.0, repeats: true) { [weak self] _ in
             self?.refresh(force: false)
         }
         if let t = timer { RunLoop.main.add(t, forMode: .common) }
