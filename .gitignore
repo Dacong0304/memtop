@@ -1,0 +1,8 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+
+# 构建产物
+memtop-bar/MemTopBar.app/
+memtop-bar/icons/*.iconset/
+dist/

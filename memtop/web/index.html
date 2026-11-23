@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="memtop-token" content="__MEMTOP_TOKEN__" />
+<meta name="memtop-version" content="__MEMTOP_VERSION__" />
+<title>MemTop · 内存速查</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%230b0e14'/%3E%3Cpath d='M9 21V11h3.4l3.6 6 3.6-6H23v10h-3v-5.2L16.9 21h-1.8L12 15.8V21z' fill='%2357d6c8'/%3E%3C/svg%3E" />
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+<div class="ambient" aria-hidden="true"></div>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="18" height="18">
+        <path d="M4 17V7h3l5 7 5-7h3v10h-2.6v-6.1L13.2 17h-2.4L6.6 10.9V17z" fill="currentColor"/>
+      </svg>
+    </span>
+    <div class="brand-copy">
+      <h1>MemTop</h1>
+      <p>内存速查 · 活动监视器口径</p>
+    </div>
+  </div>
+
+  <div class="topbar-status">
+    <span class="chip" id="machineChip">—</span>
+    <span class="pressure" id="pressureChip" data-level="1"><i></i><em>压力 —</em></span>
+  </div>
+
+  <div class="topbar-tools">
+    <label class="toggle" title="只显示当前用户拥有的进程">
+      <input type="checkbox" id="onlyMine" />
+      <span class="toggle-track"><span class="toggle-thumb"></span></span>
+      <span class="toggle-text">只看我的</span>
+    </label>
+    <label class="field">
+      <span>刷新</span>
+      <select id="interval">
+        <option value="1000">1 秒</option>
+        <option value="2000" selected>2 秒</option>
+        <option value="5000">5 秒</option>
+        <option value="0">暂停</option>
+      </select>
+    </label>
+    <button class="btn ghost" id="btnSafety">
+      <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+        <path d="M12 3l7 3v5.5c0 4.4-2.9 8.1-7 9.5-4.1-1.4-7-5.1-7-9.5V6z" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      </svg>
+      安全中心
+    </button>
+  </div>
+</header>
+
+<main class="page">
+  <section class="hero">
+    <article class="card gauge-card">
+      <div class="gauge" id="gauge">
+        <svg viewBox="0 0 200 200" aria-hidden="true">
+          <defs>
+            <linearGradient id="gaugeGrad" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stop-color="#5eead4"/>
+              <stop offset="55%" stop-color="#57d6c8"/>
+              <stop offset="100%" stop-color="#6aa8ff"/>
+            </linearGradient>
+          </defs>
+          <circle class="gauge-track" cx="100" cy="100" r="80" />
+          <circle class="gauge-fill" id="gaugeFill" cx="100" cy="100" r="80" />
+        </svg>
+        <div class="gauge-label">
+          <div class="gauge-pct"><span id="usedPct">--</span><i>%</i></div>
+          <div class="gauge-used" id="usedText">— / —</div>
+          <div class="gauge-caption">已用内存</div>
+        </div>
+      </div>
+      <div class="gauge-foot">
+        <span class="live" id="liveDot" data-state="loading"></span>
+        <span id="freshness">正在采样…</span>
+      </div>
+    </article>
+
+    <article class="card breakdown-card">
+      <div class="card-head">
+        <h2>内存构成</h2>
+        <span class="hint" id="sampleMeta"></span>
+      </div>
+      <div class="stack" id="stack" aria-hidden="true"></div>
+      <ul class="legend" id="legend"></ul>
+      <div class="facts">
+        <div class="fact"><span>交换</span><b id="swapText">—</b></div>
+        <div class="fact"><span>进程</span><b id="procText">—</b></div>
+        <div class="fact"><span>可结束合计</span><b id="reclaimText">—</b></div>
+      </div>
+    </article>
+  </section>
+
+  <section class="board card">
+    <div class="board-head">
+      <div class="board-title">
+        <h2>进程</h2>
+        <span class="count" id="groupCount">—</span>
+      </div>
+      <div class="board-tools">
+        <label class="search">
+          <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+            <circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="1.7"/>
+            <path d="M16 16l4 4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+          </svg>
+          <input id="search" type="search" placeholder="搜索应用、进程或 PID" autocomplete="off" spellcheck="false" />
+          <kbd>/</kbd>
+        </label>
+        <div class="seg" id="sortSeg" role="group" aria-label="排序">
+          <button data-sort="mem" class="on">内存</button>
+          <button data-sort="compressed">压缩</button>
+          <button data-sort="name">名称</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <table class="grid">
+        <thead>
+          <tr>
+            <th class="col-proc">进程</th>
+            <th class="col-mem">内存</th>
+            <th class="col-pct">占比</th>
+            <th class="col-comp">压缩</th>
+            <th class="col-user">用户</th>
+            <th class="col-act"></th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div class="empty" id="empty" hidden>
+        <p>没有匹配的进程</p>
+        <span>换个关键词，或清空「只看我的」</span>
+      </div>
+      <div class="skeleton" id="skeleton">
+        <div class="sk-row"></div><div class="sk-row"></div><div class="sk-row"></div>
+        <div class="sk-row"></div><div class="sk-row"></div><div class="sk-row"></div>
+      </div>
+    </div>
+
+    <footer class="board-foot">
+      <span id="footNote">—</span>
+      <span class="keys">
+        <kbd>j</kbd><kbd>k</kbd> 移动
+        <kbd>Enter</kbd> 展开
+        <kbd>x</kbd> 结束
+        <kbd>/</kbd> 搜索
+      </span>
+    </footer>
+  </section>
+</main>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
+<!-- 结束进程确认 -->
+<div class="overlay" id="killOverlay" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="killTitle">
+    <div class="modal-head">
+      <h3 id="killTitle">结束进程</h3>
+      <p id="killSub">—</p>
+    </div>
+    <div class="modal-body">
+      <div class="target-list" id="killTargets"></div>
+      <div class="reclaim">
+        <span>预计回收</span>
+        <b id="killReclaim">—</b>
+      </div>
+      <div class="warn" id="killWarn" hidden>
+        <strong>包含应用主进程</strong>
+        <p>可能有未保存的内容。确认无误请输入 <code>yes</code>。</p>
+        <input id="ackInput" placeholder="yes" autocomplete="off" spellcheck="false" />
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn text" id="killProtect">改为保护它</button>
+      <span class="spacer"></span>
+      <button class="btn ghost" id="killCancel">取消</button>
+      <button class="btn danger" id="killConfirm">结束进程</button>
+    </div>
+  </div>
+</div>
+
+<!-- 安全中心 -->
+<div class="overlay drawer-overlay" id="safetyOverlay" hidden>
+  <aside class="drawer" role="dialog" aria-modal="true" aria-label="安全中心">
+    <div class="drawer-head">
+      <div>
+        <h3>安全中心</h3>
+        <p>保护名单与操作记录</p>
+      </div>
+      <button class="icon-btn" id="safetyClose" aria-label="关闭">
+        <svg viewBox="0 0 24 24" width="16" height="16"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+    <div class="tabs" id="safetyTabs">
+      <button data-tab="protect" class="on">保护名单</button>
+      <button data-tab="log">操作记录</button>
+    </div>
+    <div class="drawer-body">
+      <section class="tab-panel" data-panel="protect">
+        <p class="drawer-note">名称支持 <code>*</code> 通配；命中的进程永不出现在可结束列表里。</p>
+        <div class="chips" id="protectChips"></div>
+        <form class="add-form" id="protectForm">
+          <input id="protectInput" placeholder="应用名，如 Google Chrome" autocomplete="off" />
+          <button class="btn primary" type="submit">加入</button>
+        </form>
+        <p class="path-note" id="protectPath"></p>
+
+        <div class="hard-rules">
+          <h4>内置硬保护</h4>
+          <ul>
+            <li><b>PID 0 / 1</b> 与 launchd、WindowServer、Finder、Dock 等关键进程</li>
+            <li><b>系统路径</b> /System、/usr/libexec、/Library/Apple、/sbin</li>
+            <li><b>当前会话的祖先进程</b> 终端、tmux、以及运行 memtop 的宿主</li>
+            <li><b>其他用户的进程</b> 默认不可结束（需 --allow-root）</li>
+          </ul>
+          <p>以上规则不受自定义名单影响，也无法从网页端解除。</p>
+        </div>
+      </section>
+      <section class="tab-panel" data-panel="log" hidden>
+        <ul class="log-list" id="logList"></ul>
+        <p class="path-note" id="logPath"></p>
+      </section>
+    </div>
+  </aside>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>
