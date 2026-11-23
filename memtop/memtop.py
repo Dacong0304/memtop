@@ -47,7 +47,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 HOME = os.path.expanduser("~")
 CONFIG_DIR = os.path.join(HOME, ".config", "memtop")
 PROTECT_FILE = os.path.join(CONFIG_DIR, "protect.txt")

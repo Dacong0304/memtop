@@ -1061,6 +1061,46 @@ final class MTStack: NSStackView {
     override var isFlipped: Bool { true }
 }
 
+// MARK: - 原生内存摘要（菜单栏标题用，避免反复启动 Python）
+
+enum MTNative {
+    struct Summary {
+        let used: Int
+        let total: Int
+        let pressure: Int32
+    }
+
+    static func memory() -> Summary? {
+        var stats = vm_statistics64()
+        var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64>.size / MemoryLayout<integer_t>.size)
+        let kr = withUnsafeMutablePointer(to: &stats) { ptr in
+            ptr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { p in
+                host_statistics64(mach_host_self(), HOST_VM_INFO64, p, &count)
+            }
+        }
+        guard kr == KERN_SUCCESS else { return nil }
+
+        var pageSize: vm_size_t = 0
+        host_page_size(mach_host_self(), &pageSize)
+        let page = Int(pageSize)
+
+        // vm_stat 的 "Anonymous pages" 就是 internal_page_count（不再减 purgeable）
+        let anon = UInt64(stats.internal_page_count)
+        let used = Int(anon + UInt64(stats.wire_count) + UInt64(stats.compressor_page_count)) * page
+
+        var total: Int = 0
+        var size = MemoryLayout<Int>.size
+        sysctlbyname("hw.memsize", &total, &size, nil, 0)
+
+        var pressure: Int32 = 1
+        var psize = MemoryLayout<Int32>.size
+        sysctlbyname("kern.memorystatus_vm_pressure_level", &pressure, &psize, nil, 0)
+
+        guard total > 0 else { return nil }
+        return Summary(used: used, total: total, pressure: pressure)
+    }
+}
+
 // MARK: - 菜单栏 App
 
 final class PanelWindow: NSPanel {
@@ -1242,18 +1282,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func quit() { NSApp.terminate(nil) }
 
     private func refreshStatusTitle() {
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            let result = MemTopBar.runJSON(MemTopBar.resolveMemtop())
-            guard case .success(let snap) = result else { return }
-            let mem = snap.memory
-            let pct = mem.total > 0 ? Int((Double(mem.used) / Double(mem.total) * 100).rounded()) : 0
-            let title = "\(pct)%  " + MT.size(mem.used).replacingOccurrences(of: " GB", with: "G")
-                .replacingOccurrences(of: " MB", with: "M")
-            DispatchQueue.main.async {
-                self?.statusItem.button?.title = title
-                self?.statusItem.button?.toolTip = "已用 \(MT.size(mem.used)) / \(MT.size(mem.total)) · 压力 \(mem.pressure_label)"
-            }
-        }
+        guard let mem = MTNative.memory() else { return }
+        let pct = mem.total > 0 ? Int((Double(mem.used) / Double(mem.total) * 100).rounded()) : 0
+        let title = "\(pct)%  " + MT.size(mem.used).replacingOccurrences(of: " GB", with: "G")
+            .replacingOccurrences(of: " MB", with: "M")
+        statusItem.button?.title = title
+        let label = mem.pressure == 2 ? "警告" : mem.pressure == 4 ? "严重" : "正常"
+        statusItem.button?.toolTip = "已用 \(MT.size(mem.used)) / \(MT.size(mem.total)) · 压力 \(label)"
     }
 }
 
@@ -1376,6 +1411,13 @@ let args = CommandLine.arguments
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate
+
+if args.contains("--mem-test") {
+    if let m = MTNative.memory() {
+        print("used=\(m.used) total=\(m.total) pressure=\(m.pressure)")
+    }
+    exit(0)
+}
 
 if let i = args.firstIndex(of: "--kill-test"), i + 1 < args.count, let pid = Int(args[i + 1]) {
     let r = MemTopBar.runKill(MemTopBar.resolveMemtop(), pids: [pid])

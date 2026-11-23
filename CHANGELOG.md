@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.3.1 — 2026-11-23
+
+- 菜单栏标题改用 `host_statistics64` 原生采样，去掉每 5 秒启动 Python + `top`
+  （单次约 0.8 秒 CPU）的背景开销
+- 修复 MemTopBar 被系统标为「使用大量能耗」的问题；面板打开时才调用 `memtop --json`
+
 ## v1.3.0 — 2026-11-23
 
 - 新增文件缓存清理：Web「清理缓存」、菜单栏「清缓存」、`memtop purge`

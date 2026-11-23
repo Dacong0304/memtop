@@ -93,10 +93,11 @@ App 启动时会按下面的顺序找它：
 
 ## 设计说明
 
-**为什么用 `memtop --json` 而不是在 Swift 里重新采集？**
-内存口径（`phys_footprint`、压缩页、`.app` 归组、保护规则）在 CLI 里已经实现并测过，
-App 只做一次 `Process` 调用 + `JSONDecoder`。这样两个前端永远看到同一份数据，
-修一次口径两边都生效。
+**为什么标题不再调用 `memtop --json`？**
+菜单栏标题每 5 秒刷新一次，如果每次都启动 Python + `top`，单次约 0.8 秒 CPU，
+长期运行会被系统标成“使用大量能耗”。标题只需要已用/总量/压力，所以改用
+`host_statistics64` + `sysctl` 原生采样（微秒级，和 CLI 同一口径）；
+只有打开面板时才调用 `memtop --json` 拿完整进程列表。
 
 **为什么结束也走命令行？**
 `memtop kill <pids> --yes` 会把操作写进 `~/.local/state/memtop/kill.log`，
