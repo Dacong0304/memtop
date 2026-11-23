@@ -47,7 +47,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 HOME = os.path.expanduser("~")
 CONFIG_DIR = os.path.join(HOME, ".config", "memtop")
 PROTECT_FILE = os.path.join(CONFIG_DIR, "protect.txt")
@@ -548,6 +548,11 @@ def reclaimable(snap: Snapshot) -> int:
     return sum(m.footprint for g in snap.groups for m in g.members if not m.protected)
 
 
+def compressed_reclaimable(snap: Snapshot) -> int:
+    """可结束进程当前占用的压缩页；结束它们才能真正回收这部分。"""
+    return sum(m.compressed for g in snap.groups for m in g.members if not m.protected)
+
+
 def killable_members(group: Group) -> List[Proc]:
     return [m for m in group.members if not m.protected]
 
@@ -707,6 +712,7 @@ def render_json(snap: Snapshot) -> str:
             "swap_total": mem.swap_total, "swap_used": mem.swap_used,
             "pressure": mem.pressure, "pressure_label": PRESSURE_LABEL.get(mem.pressure),
             "reclaimable": reclaimable(snap),
+            "compressed_killable": compressed_reclaimable(snap),
         },
         "processes": len(snap.procs),
         "groups": [{
@@ -1481,6 +1487,7 @@ def cmd_pressure(args) -> int:
     print("交换       %s / %s" % (human(mem.swap_used), human(mem.swap_total)))
     print("压力       %s" % PRESSURE_LABEL.get(mem.pressure, "?"))
     print("可结束进程合计 ≈ %s" % human(reclaimable(snap)))
+    print("其中压缩内存   ≈ %s（结束进程才可回收）" % human(compressed_reclaimable(snap)))
     return 0
 
 
@@ -1567,6 +1574,7 @@ def snapshot_json(snap: Snapshot, state: "WebState") -> dict:
             "pressure": mem.pressure,
             "pressure_label": PRESSURE_LABEL.get(mem.pressure, "未知"),
             "reclaimable": reclaimable(snap),
+            "compressed_killable": compressed_reclaimable(snap),
         },
         "processes": len(snap.procs),
         "groups": [group_json(g) for g in snap.groups],

@@ -51,6 +51,7 @@ struct MTMemory: Decodable {
     let pressure: Int
     let pressure_label: String
     let reclaimable: Int
+    let compressed_killable: Int?
 }
 
 struct MTSnapshot: Decodable {
@@ -156,6 +157,13 @@ final class MTButton: NSButton {
     }
 
     @objc private func fire() { handler?() }
+
+    func setTitle(_ text: String, size: CGFloat = 9.5, tint: NSColor = MT.dim) {
+        attributedTitle = NSAttributedString(string: text, attributes: [
+            .foregroundColor: tint,
+            .font: NSFont.systemFont(ofSize: size, weight: .medium),
+        ])
+    }
 
     override func mouseEntered(with event: NSEvent) {
         layer?.backgroundColor = NSColor.white.withAlphaComponent(0.08).cgColor
@@ -279,6 +287,9 @@ final class PanelController: NSViewController {
 
     private var expanded = Set<String>()
     private var selected = Set<Int>()
+    private var sortByCompressed = false
+    private var explainedCompressed = false
+    private var sortButton: MTButton!
     private var snapshot: MTSnapshot?
     private var timer: Timer?
     private var loading = false
@@ -379,15 +390,22 @@ final class PanelController: NSViewController {
         scroll.documentView = listStack
 
         // ---- 脚注
-        let openButton = MTButton("打开仪表盘") { [weak self] in self?.openDashboard() }
+        let openButton = MTButton("仪表盘") { [weak self] in self?.openDashboard() }
+        openButton.setContentCompressionResistancePriority(.required, for: .horizontal)
         let refreshButton = MTButton("刷新") { [weak self] in self?.refresh(force: true) }
         let quitButton = MTButton("退出", tint: MT.faint) { [weak self] in self?.onQuit?() }
+        sortButton = MTButton("按压缩", size: 9.5, tint: MT.dim) { [weak self] in self?.toggleSortMode() }
+        sortButton.toolTip = "按压缩内存占用排序（结束进程可释放）"
+        sortButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        refreshButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        quitButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        footNote.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let footSpacer = NSView()
         footSpacer.setContentHuggingPriority(.init(1), for: .horizontal)
-        let foot = NSStackView(views: [openButton, footNote, footSpacer, refreshButton, quitButton])
+        let foot = NSStackView(views: [openButton, footNote, footSpacer, sortButton, refreshButton, quitButton])
         foot.orientation = .horizontal
         foot.alignment = .centerY
-        foot.spacing = 10
+        foot.spacing = 8
         foot.translatesAutoresizingMaskIntoConstraints = false
 
         let divider1 = NSBox()
@@ -568,15 +586,19 @@ final class PanelController: NSViewController {
             (Double(mem.cached) / Double(max(1, mem.total)), NSColor.white.withAlphaComponent(0.22)),
         ]
         legend.stringValue = "应用 \(MT.size(mem.app)) · 有线 \(MT.size(mem.wired)) · 压缩 \(MT.size(mem.compressed)) · 缓存 \(MT.size(mem.cached))"
-        footNote.stringValue = "\(snap.processes) 进程 · 可结束 \(MT.size(mem.reclaimable))"
+        footNote.stringValue = "\(snap.processes) 进程 · 压缩可释放 \(MT.size(mem.compressed_killable ?? 0))"
+        footNote.toolTip = "可结束进程当前占用的压缩页合计；结束它们才会回收这部分内存"
 
         let top = Array(snap.groups.prefix(40))
-        rebuildList(top)
-        if let idx = debugExpand, idx < top.count {
+        let ordered = sortByCompressed
+            ? top.sorted { $0.compressed > $1.compressed }
+            : top
+        rebuildList(ordered)
+        if let idx = debugExpand, idx < ordered.count {
             debugExpand = nil
-            expanded.insert(top[idx].key)
+            expanded.insert(ordered[idx].key)
             if debugSelect > 0 {
-                let g = top[idx]
+                let g = ordered[idx]
                 selected.formUnion(g.members.filter { !$0.protected }.prefix(debugSelect).map { $0.pid })
             }
             rebuildList(top)
@@ -637,14 +659,18 @@ final class PanelController: NSViewController {
         let icon = MTIconView(bundle: g.bundle, name: g.name, size: 20)
 
         let name = MT.label(g.name, size: 12.5, weight: .medium)
-        let sub = MT.label("\(g.members.count) 个进程" + (g.risk == "caution" ? " · 慎" : ""),
+        let subText = sortByCompressed
+            ? "共 \(MT.size(g.footprint)) · \(g.members.count) 个进程"
+            : "\(g.members.count) 个进程"
+        let sub = MT.label(subText + (g.risk == "caution" ? " · 慎" : ""),
                            size: 9.5, color: g.risk == "caution" ? MT.amber : MT.faint)
         let nameBox = NSStackView(views: [name, sub])
         nameBox.orientation = .vertical
         nameBox.spacing = 0
         nameBox.alignment = .leading
 
-        let size = MT.label(MT.size(g.footprint), size: 11.5, weight: .medium, mono: true)
+        let shownValue = sortByCompressed ? g.compressed : g.footprint
+        let size = MT.label(MT.size(shownValue), size: 11.5, weight: .medium, mono: true)
         size.alignment = .right
         size.widthAnchor.constraint(equalToConstant: 58).isActive = true
 
@@ -814,6 +840,30 @@ final class PanelController: NSViewController {
         batchLabel.stringValue = visible ? "已选 \(chosen.count) 个 · ≈ \(MT.size(total))" : ""
         batchKillButton.isEnabled = visible
         batchKillButton.alphaValue = visible ? 1 : 0.35
+    }
+
+    func enableCompressedSort() {
+        sortByCompressed = true
+        sortButton?.setTitle("按内存", tint: MT.teal)
+        if let snap = snapshot {
+            let top = Array(snap.groups.prefix(40))
+            rebuildList(top.sorted { $0.compressed > $1.compressed })
+        }
+    }
+
+    private func toggleSortMode() {
+        sortByCompressed.toggle()
+        sortButton.setTitle(sortByCompressed ? "按内存" : "按压缩", tint: sortByCompressed ? MT.teal : MT.dim)
+        if let snap = snapshot {
+            let top = Array(snap.groups.prefix(40))
+            rebuildList(sortByCompressed ? top.sorted { $0.compressed > $1.compressed } : top)
+        }
+        if sortByCompressed && !explainedCompressed {
+            explainedCompressed = true
+            alert("按压缩排序",
+                  "压缩内存由内核管理，用户态无法直接释放。这里按每个应用占用的压缩页排序；结束进程后，它占用的压缩页才会被回收。",
+                  style: .informational)
+        }
     }
 
     private func batchKillSelected() {
@@ -1276,10 +1326,14 @@ if let idx = args.firstIndex(of: "--snapshot"), idx + 1 < args.count {
     if let i = args.firstIndex(of: "--select"), i + 1 < args.count, let n = Int(args[i + 1]) {
         controller.debugSelect = n
     }
+    let compressedMode = args.contains("--compressed")
     let v = controller.view
     v.frame = NSRect(x: 0, y: 0, width: 360, height: 604)
     v.layoutSubtreeIfNeeded()
     controller.refresh(force: true)
+    if compressedMode {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { controller.enableCompressedSort() }
+    }
     let wait = args.firstIndex(of: "--wait").flatMap { i -> Double? in
         i + 1 < args.count ? Double(args[i + 1]) : nil
     } ?? 2.6

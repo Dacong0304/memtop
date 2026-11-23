@@ -328,6 +328,9 @@ body {
   gap: 6px 10px;
 }
 .legend li { display: flex; align-items: center; gap: 7px; min-width: 0; font-size: 11.5px; color: var(--dim); }
+.legend li[data-sort] { cursor: pointer; border-radius: 6px; padding: 2px 4px; margin: -2px -4px; transition: background 0.15s ease, color 0.15s ease; }
+.legend li[data-sort]:hover { background: rgba(255, 255, 255, 0.05); color: var(--text); }
+.legend li.active { color: var(--text); }
 .legend i { width: 8px; height: 8px; border-radius: 3px; flex: 0 0 auto; }
 .legend i.app { background: #57d6c8; }
 .legend i.wired { background: #6da8ff; }
@@ -340,7 +343,7 @@ body {
 .facts {
   margin-top: auto;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
   padding-top: 14px;
   border-top: 1px solid var(--line);

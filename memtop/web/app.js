@@ -130,9 +130,14 @@
         (Math.max(0, Math.min(100, fmtPct(mem.free + (mem.total - sum), mem.total)))).toFixed(2) + "%";
     }
 
-    $("#legend").innerHTML = parts.map(([cls, label, v]) =>
-      '<li><i class="' + cls + '"></i><span>' + label + "</span><b>" + fmtSize(v) + "</b></li>"
-    ).join("");
+    $("#legend").innerHTML = parts.map(([cls, label, v]) => {
+      const sortable = cls === "compressed" ? ' data-sort="compressed" title="按压缩占用排序"' :
+        cls === "app" ? ' data-sort="mem" title="按内存占用排序"' : "";
+      const active = (state.sort === "compressed" && cls === "compressed") ||
+        (state.sort === "mem" && cls === "app") ? " active" : "";
+      return '<li class="' + active + '"' + sortable + '><i class="' + cls + '"></i><span>' +
+        label + "</span><b>" + fmtSize(v) + "</b></li>";
+    }).join("");
 
     $("#swapText").textContent = mem.swap_total > 0
       ? fmtSize(mem.swap_used) + " / " + fmtSize(mem.swap_total)
@@ -473,6 +478,8 @@
 
       const reclaim = data.memory.reclaimable || 0;
       $("#reclaimText").textContent = fmtSize(reclaim);
+      $("#compressRelease").textContent = fmtSize(data.memory.compressed_killable || 0);
+      $("#compressRelease").title = "结束这些进程可回收的压缩页；压缩本身由内核管理，无法直接释放";
       $("#reclaimText").title = "当前用户可结束的进程合计（含共享内存，偏大）";
       $("#procText").textContent = data.processes + " 个";
 
@@ -536,6 +543,19 @@
       tickFreshness();
       schedule();
       if (!state.paused) load();
+    });
+
+    $("#legend").addEventListener("click", (e) => {
+      const li = e.target.closest("li[data-sort]");
+      if (!li) return;
+      state.sort = li.dataset.sort;
+      state.limit = 150;
+      $$("#sortSeg button").forEach((x) => x.classList.toggle("on", x.dataset.sort === state.sort));
+      renderList();
+      if (state.sort === "compressed" && !state.compressedExplained) {
+        state.compressedExplained = true;
+        toast("压缩内存由内核管理，用户态无法直接释放；按压缩排序后结束进程，才能回收对应的压缩页。", "info");
+      }
     });
 
     $$("#sortSeg button").forEach((b) => b.addEventListener("click", () => {
@@ -676,6 +696,11 @@
 
   async function boot() {
     bind();
+    const sortParam = new URLSearchParams(location.search).get("sort");
+    if (["mem", "compressed", "name"].includes(sortParam)) {
+      state.sort = sortParam;
+      $$("#sortSeg button").forEach((x) => x.classList.toggle("on", x.dataset.sort === sortParam));
+    }
     state.fetchedAt = Date.now();
     await load();
     schedule();

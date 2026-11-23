@@ -71,7 +71,7 @@ cd memtop-bar && ./install.sh   # 菜单栏 App（需要 Command Line Tools）
 ```
 
 菜单栏 App 也可以直接从 [Releases](https://github.com/Dacong0304/memtop/releases)
-下载 `MemTopBar-1.1.0.zip`，解压后拖进 `~/Applications`。
+下载 `MemTopBar-1.2.0.zip`，解压后拖进 `~/Applications`。
 
 ## 用法
 
@@ -116,9 +116,24 @@ TUI 按键：`↑↓/jk` 移动、`Enter` 展开、`x` 结束、`/` 过滤、`s`
 | 缓存 | `File-backed pages`（系统可回收，不计入已用） |
 | 压力 | `kern.memorystatus_vm_pressure_level`：1 正常 / 2 警告 / 4 严重 |
 | 进程内存 | `phys_footprint`（top 的 MEM 列），不是 RSS |
+| 可释放压缩 | 可结束进程当前占用的压缩页合计 |
 
 「进程足迹合计」会大于「已用」：共享库、共享内存会被每个进程各算一次，活动监视器也是如此。
 所以「预计回收」只是上限，真实释放量通常更小。
+
+## 关于「压缩」内存
+
+「压缩」列是内核压缩后仍驻留在 RAM 里的页，不是浪费的重复数据——同样的内容不压缩会占更多内存。
+macOS 没有向用户态开放“解压/丢弃压缩页”的接口：`purge` 只清文件缓存且需要 root，也动不了
+compressor。真正能回收这部分内存的只有结束对应进程（或让系统换出到 swap）。
+
+所以 MemTop 没做“一键解压释放”这种假动作，而是把可回收量摆出来：
+
+- 统计口径增加 **「可释放压缩」**：可结束进程当前占用的压缩页；
+- **Web**：概览第四格直接显示该值；点图例里的「压缩」按压缩占用排序，结束大户即可回收；
+- **菜单栏**：页脚显示「压缩可释放」，点「按压缩 / 按内存」切换排序，行内数值随之切换为压缩值。
+
+![按压缩排序](memtop/docs/web-compressed.png)
 
 ## 目录结构
 
