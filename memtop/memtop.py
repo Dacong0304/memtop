@@ -47,7 +47,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
-VERSION = "1.3.2"
+VERSION = "1.4.0"
 HOME = os.path.expanduser("~")
 CONFIG_DIR = os.path.join(HOME, ".config", "memtop")
 PROTECT_FILE = os.path.join(CONFIG_DIR, "protect.txt")
@@ -1663,6 +1663,7 @@ class WebState:
         self._error: Optional[str] = None
         self._gen = 0
         self._last_purge = 0.0
+        self._last_request = time.time()
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
@@ -1681,6 +1682,15 @@ class WebState:
         with self._lock:
             return self._snap
 
+    def snapshot_for_request(self) -> Optional[Snapshot]:
+        """被请求时返回快照；如果服务已经空闲很久，同步采一次再返回。"""
+        now = time.time()
+        idle = now - self._last_request > 30
+        self._last_request = now
+        if idle or self.get() is None:
+            self.sample_once()
+        return self.get()
+
     def last_error(self) -> Optional[str]:
         with self._lock:
             return self._error
@@ -1689,8 +1699,12 @@ class WebState:
         self.sample_once()
 
         def loop() -> None:
-            while not self._stop.wait(self.interval):
+            # 没有客户端访问超过 30 秒就停止采样，避免后台空转
+            while not self._stop.wait(0.5):
+                if time.time() - self._last_request > 30:
+                    continue
                 self.sample_once()
+                self._stop.wait(self.interval)
 
         self._thread = threading.Thread(target=loop, name="memtop-sampler", daemon=True)
         self._thread.start()
@@ -1772,7 +1786,7 @@ def make_handler(state: WebState, web_dir: str):
             if path in ("/", "/index.html"):
                 return self._serve_index()
             if path == "/api/snapshot":
-                snap = state.get()
+                snap = state.snapshot_for_request()
                 if snap is None:
                     err = state.last_error()
                     return self._json(503, {"ok": False, "error": err or "首次采样中"})

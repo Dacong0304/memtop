@@ -5,6 +5,7 @@
 
 import AppKit
 import Foundation
+import IOKit.ps
 
 struct MTFailure: Error {
     let message: String
@@ -239,6 +240,33 @@ final class MTSelectButton: NSButton {
     @objc private func fire() { handler?() }
 }
 
+final class MTBadge: NSView {
+    private let label = NSTextField(labelWithString: "")
+
+    convenience init() {
+        self.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = 5
+        layer?.backgroundColor = MT.amber.withAlphaComponent(0.12).cgColor
+        layer?.borderWidth = 1
+        layer?.borderColor = MT.amber.withAlphaComponent(0.28).cgColor
+        label.font = NSFont.systemFont(ofSize: 8.5, weight: .medium)
+        label.textColor = MT.amber
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+        translatesAutoresizingMaskIntoConstraints = false
+        isHidden = true
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+            heightAnchor.constraint(equalToConstant: 18),
+        ])
+    }
+
+    func set(_ text: String) { label.stringValue = text }
+}
+
 final class MTIconView: NSImageView {
     init(bundle: String?, name: String, size: CGFloat = 20) {
         super.init(frame: NSRect(x: 0, y: 0, width: size, height: size))
@@ -290,6 +318,7 @@ final class PanelController: NSViewController {
     private var sortByCompressed = false
     private var explainedCompressed = false
     private var sortButton: MTButton!
+    private let ecoBadge = MTBadge()
     private var snapshot: MTSnapshot?
     private var timer: Timer?
     private var loading = false
@@ -344,7 +373,7 @@ final class PanelController: NSViewController {
         }
         purgeButton.toolTip = "丢弃文件缓存（需要管理员授权，不影响压缩内存）"
 
-        let header = NSStackView(views: [brand, headerSpacer, purgeButton, pressure])
+        let header = NSStackView(views: [brand, headerSpacer, ecoBadge, purgeButton, pressure])
         header.orientation = .horizontal
         header.alignment = .centerY
         header.translatesAutoresizingMaskIntoConstraints = false
@@ -513,22 +542,43 @@ final class PanelController: NSViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        NotificationCenter.default.addObserver(self, selector: #selector(energyChanged),
+                                               name: .mtEnergyChanged, object: nil)
+        updateEnergyUI()
+        schedulePanelTimer()
     }
 
     override func viewDidAppear() {
         super.viewDidAppear()
         refresh(force: true)
+        if timer == nil { schedulePanelTimer() }
+    }
+
+    private func schedulePanelTimer() {
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 4.0, repeats: true) { [weak self] _ in
-            self?.refresh(force: false)
+        timer = Timer.scheduledTimer(withTimeInterval: MTEnergy.shared.panelInterval,
+                                     repeats: true) { [weak self] _ in
+            guard let self = self, self.view.window?.isVisible == true else { return }
+            self.refresh(force: false)
         }
         if let t = timer { RunLoop.main.add(t, forMode: .common) }
     }
 
+    @objc private func energyChanged() {
+        updateEnergyUI()
+        if timer != nil { schedulePanelTimer() }
+    }
+
+    private func updateEnergyUI() {
+        let energy = MTEnergy.shared
+        ecoBadge.isHidden = !energy.isSaving
+        ecoBadge.set(energy.badgeText)
+        ecoBadge.toolTip = energy.detail
+    }
+
     override func viewWillDisappear() {
         super.viewWillDisappear()
-        timer?.invalidate()
-        timer = nil
+        // 定时器保留：面板隐藏时 tick 只做一次 isVisible 判断，不再采样
     }
 
     deinit { timer?.invalidate() }
@@ -1061,6 +1111,147 @@ final class MTStack: NSStackView {
     override var isFlipped: Bool { true }
 }
 
+// MARK: - 电源与能耗策略
+
+enum MTPowerSource {
+    case ac
+    case battery
+}
+
+enum MTPower {
+    static func current() -> MTPowerSource {
+        if let sim = ProcessInfo.processInfo.environment["MT_SIM_POWER"] {
+            return sim == "battery" ? .battery : .ac
+        }
+        guard let blob = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+              let type = IOPSGetProvidingPowerSourceType(blob)?.takeUnretainedValue() as String?
+        else { return .ac }
+        return type == kIOPSBatteryPowerValue ? .battery : .ac
+    }
+
+    static func batteryPercent() -> Int? {
+        if let sim = ProcessInfo.processInfo.environment["MT_SIM_PERCENT"], let v = Int(sim) {
+            return v
+        }
+        guard let blob = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+              let list = IOPSCopyPowerSourcesList(blob)?.takeRetainedValue() as? [CFTypeRef]
+        else { return nil }
+        for item in list {
+            guard let desc = IOPSGetPowerSourceDescription(blob, item)?.takeUnretainedValue() as? [String: Any],
+                  let cur = desc[kIOPSCurrentCapacityKey] as? Int,
+                  let max = desc[kIOPSMaxCapacityKey] as? Int, max > 0
+            else { continue }
+            return Int((Double(cur) / Double(max) * 100).rounded())
+        }
+        return nil
+    }
+}
+
+extension Notification.Name {
+    static let mtEnergyChanged = Notification.Name("mt.energy.changed")
+}
+
+final class MTEnergy {
+    static let shared = MTEnergy()
+
+    enum Override: String {
+        case auto, balanced, lowPower
+    }
+
+    enum Profile {
+        case balanced
+        case lowPower
+        case critical
+    }
+
+    private(set) var source: MTPowerSource = .ac
+    private(set) var batteryPercent: Int?
+    private(set) var systemLowPower = false
+    private(set) var profile: Profile = .balanced
+
+    private var timer: Timer?
+    private let key = "memtop.energyMode"
+
+    var override: Override {
+        get { Override(rawValue: UserDefaults.standard.string(forKey: key) ?? "auto") ?? .auto }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: key)
+            recompute(forceNotify: true)
+        }
+    }
+
+    var panelInterval: TimeInterval {
+        switch profile {
+        case .balanced: return 4
+        case .lowPower: return 10
+        case .critical: return 20
+        }
+    }
+
+    var titleInterval: TimeInterval {
+        switch profile {
+        case .balanced: return 5
+        case .lowPower: return 15
+        case .critical: return 30
+        }
+    }
+
+    var isSaving: Bool { profile != .balanced }
+
+    var badgeText: String {
+        profile == .critical ? "极省电" : "低功耗"
+    }
+
+    var detail: String {
+        let src = source == .battery ? "电池" : "电源"
+        let pct = batteryPercent.map { " \($0)%" } ?? ""
+        return "\(src)\(pct) · 面板 \(Int(panelInterval))s / 标题 \(Int(titleInterval))s"
+    }
+
+    func start() {
+        refresh()
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            self?.refresh()
+        }
+        if let t = timer { RunLoop.main.add(t, forMode: .common) }
+    }
+
+    func refresh() {
+        source = MTPower.current()
+        batteryPercent = MTPower.batteryPercent()
+        systemLowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
+        recompute(forceNotify: false)
+    }
+
+    private func recompute(forceNotify: Bool) {
+        let old = profile
+        switch override {
+        case .balanced:
+            profile = .balanced
+        case .lowPower:
+            profile = .lowPower
+        case .auto:
+            if source == .battery && (batteryPercent ?? 100) <= 20 {
+                profile = .critical
+            } else if source == .battery || systemLowPower {
+                profile = .lowPower
+            } else {
+                profile = .balanced
+            }
+        }
+        if forceNotify || old != profile {
+            NotificationCenter.default.post(name: .mtEnergyChanged, object: nil)
+        }
+    }
+
+    func report() -> String {
+        let ov = override.rawValue
+        let src = source == .battery ? "battery" : "ac"
+        return "source=\(src) percent=\(batteryPercent.map(String.init) ?? "-") lpm=\(systemLowPower) override=\(ov) profile=\(profile) panel=\(Int(panelInterval))s title=\(Int(titleInterval))s"
+    }
+}
+
 // MARK: - 原生内存摘要（菜单栏标题用，避免反复启动 Python）
 
 enum MTNative {
@@ -1122,7 +1313,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var controller: PanelController!
     private var refreshTimer: Timer?
     private var localMonitor: Any?
-    private var globalMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -1139,6 +1329,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
 
+        MTEnergy.shared.start()
+
         controller = PanelController()
         controller.onQuit = { NSApp.terminate(nil) }
 
@@ -1151,10 +1343,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if CommandLine.arguments.contains("--alert-test") {
             debugAlert()
         }
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+        startTitleTimer()
+
+        NotificationCenter.default.addObserver(forName: .mtEnergyChanged, object: nil, queue: .main) { [weak self] _ in
+            self?.startTitleTimer()
             self?.refreshStatusTitle()
         }
-        RunLoop.main.add(refreshTimer!, forMode: .common)
+        let ws = NSWorkspace.shared.notificationCenter
+        ws.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.refreshTimer?.invalidate()
+        }
+        ws.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            MTEnergy.shared.refresh()
+            self?.startTitleTimer()
+            self?.refreshStatusTitle()
+        }
     }
 
     // MARK: 面板
@@ -1226,13 +1429,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return event
             }
         }
-        if globalMonitor == nil {
-            globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
-                guard let self = self else { return }
-                if self.controller.isAlerting { return }
-                self.hidePanel()
-            }
-        }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -1246,12 +1442,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func startTitleTimer() {
+        refreshTimer?.invalidate()
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: MTEnergy.shared.titleInterval,
+                                            repeats: true) { [weak self] _ in
+            self?.refreshStatusTitle()
+        }
+        if let t = refreshTimer { RunLoop.main.add(t, forMode: .common) }
+    }
+
+    @objc private func setEnergyMode(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let mode = MTEnergy.Override(rawValue: raw) else { return }
+        MTEnergy.shared.override = mode
+    }
+
     @objc private func togglePanelAction(_ sender: Any?) {
         guard let button = statusItem.button else { return }
         if let event = NSApp.currentEvent, event.type == .rightMouseUp {
             let menu = NSMenu()
             menu.addItem(withTitle: "打开面板", action: #selector(openPanel), keyEquivalent: "").target = self
             menu.addItem(withTitle: "刷新", action: #selector(forceRefresh), keyEquivalent: "r").target = self
+            let energyMenu = NSMenu()
+            for (mode, title) in [(MTEnergy.Override.auto, "自动（电池时省电）"),
+                                  (MTEnergy.Override.balanced, "标准"),
+                                  (MTEnergy.Override.lowPower, "低功耗")] {
+                let item = NSMenuItem(title: title, action: #selector(setEnergyMode(_:)), keyEquivalent: "")
+                item.representedObject = mode.rawValue
+                item.target = self
+                item.state = (MTEnergy.shared.override == mode) ? .on : .off
+                energyMenu.addItem(item)
+            }
+            let energyItem = NSMenuItem(title: "能耗模式", action: nil, keyEquivalent: "")
+            energyItem.submenu = energyMenu
+            menu.addItem(energyItem)
             menu.addItem(withTitle: "清理文件缓存…", action: #selector(purgeCache), keyEquivalent: "").target = self
             menu.addItem(.separator())
             menu.addItem(withTitle: "退出 MemTopBar", action: #selector(quit), keyEquivalent: "q").target = self
@@ -1412,6 +1636,12 @@ let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate
 
+if args.contains("--energy-report") {
+    MTEnergy.shared.refresh()
+    print(MTEnergy.shared.report())
+    exit(0)
+}
+
 if args.contains("--mem-test") {
     if let m = MTNative.memory() {
         print("used=\(m.used) total=\(m.total) pressure=\(m.pressure)")
@@ -1432,6 +1662,7 @@ if let i = args.firstIndex(of: "--kill-test"), i + 1 < args.count, let pid = Int
 if let idx = args.firstIndex(of: "--snapshot"), idx + 1 < args.count {
     // 截图模式：渲染 360x604 面板，不显示菜单栏
     let outPath = args[idx + 1]
+    MTEnergy.shared.start()
     let controller = PanelController()
     if let i = args.firstIndex(of: "--expand"), i + 1 < args.count, let n = Int(args[i + 1]) {
         controller.debugExpand = n
